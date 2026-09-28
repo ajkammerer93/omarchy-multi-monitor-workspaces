@@ -17,8 +17,10 @@ import qs.Ui
 // alike, or the connector when there is no description.
 //
 // Each bar shows only ITS screen's workspaces, labelled 1-9/0, and marks the
-// one that screen is showing. A workspace parked here from an unplugged
-// screen shows as a display glyph; hover names where it came from.
+// one that screen is showing. A workspace adopted from an unplugged screen
+// (see the adopted file) looks like any other; hover names where it came
+// from. A workspace from another screen that hasn't been adopted yet shows
+// briefly as a display glyph.
 //
 //   left-click    focus that workspace
 //   right-click   send the focused window there
@@ -38,6 +40,7 @@ BarWidget {
 
   property var blocksByKey: ({})
   property var keysByBlock: ({})
+  property var adoptedFrom: ({})
 
   readonly property var monitor: {
     var win = QsWindow.window
@@ -95,13 +98,35 @@ BarWidget {
     onLoadFailed: root.parseBlocks("")
   }
 
+  function parseAdopted(text) {
+    var map = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split("\t")
+      if (parts.length < 3) continue
+      var id = parseInt(parts[0], 10)
+      if (!isNaN(id)) map[id] = parts.slice(2).join("\t")
+    }
+    root.adoptedFrom = map
+  }
+
+  FileView {
+    id: adoptedFile
+    path: root.stateDir + "/adopted"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.parseAdopted(text())
+    onLoadFailed: root.parseAdopted("")
+  }
+
   // The Hyprland half creates the blocks file on its first parse, which can
   // land after this widget loads; a watch on a missing file never fires.
   Timer {
     interval: 3000
     repeat: true
     running: Object.keys(root.blocksByKey).length === 0
-    onTriggered: blocksFile.reload()
+    onTriggered: { blocksFile.reload(); adoptedFile.reload() }
   }
 
   // ── Settings projection ─────────────────────────────────────────────────
@@ -177,7 +202,10 @@ BarWidget {
   }
 
   function tooltip(id) {
-    if (root.isOwn(id)) return ""
+    if (root.isOwn(id)) {
+      var from = root.adoptedFrom[id]
+      return from ? "From " + from + ", unplugged. Goes back when it returns." : ""
+    }
     var owner = root.keysByBlock[Math.floor((id - 1) / root.span)]
     var digit = (id - 1) % root.span + 1
     var slot = digit === root.span ? "0" : String(digit)

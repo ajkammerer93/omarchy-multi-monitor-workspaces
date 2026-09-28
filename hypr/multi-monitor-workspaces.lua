@@ -26,20 +26,32 @@
 -- from the monitors present then. That binding is what makes a new workspace
 -- open on the right screen, what brings a returning screen's workspaces home
 -- on reload, and what makes hyprtasking's overview grid (if installed) show
--- each monitor its own ids. Unplugging a screen PARKS its workspaces on a
--- survivor, windows and all; they keep their ids, the bar shows them as a
--- glyph, and they go home when the screen returns.
+-- each monitor its own ids.
 --
--- Workspaces.qml reads the same blocks file; change both together.
+-- Unplugging a screen (undocking, above all) makes Hyprland move its
+-- workspaces to a survivor. Each one is ADOPTED there: renumbered into the
+-- survivor's block, keeping its digit where that is free, so SUPER+1 on the
+-- laptop reaches what was on the big screen's 1. Where it came from is
+-- recorded in ~/.local/state/omarchy/multi-monitor-workspaces/adopted, and
+-- when that screen returns the workspace is renumbered back and sent home,
+-- windows and all.
+--
+-- Workspaces.qml reads the same blocks and adopted files; change both
+-- together.
 
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local PLUGIN_ID = "io.github.davidboulay.multi-monitor-workspaces"
 local HOME = os.getenv("HOME") or ""
 local SHELL_CONFIG = HOME .. "/.config/omarchy/shell.json"
 local USER_HYPR = HOME .. "/.config/hypr"
 local STATE_DIR = HOME .. "/.local/state/omarchy/multi-monitor-workspaces"
 local BLOCKS_FILE = STATE_DIR .. "/blocks"
+local ADOPTED_FILE = STATE_DIR .. "/adopted"
 local SETTINGS_FILE = STATE_DIR .. "/settings"
+
+-- Hyprland's placeholder output while no real screen is connected (the
+-- instant a dock is pulled with the lid closed). Never a screen of its own.
+local IGNORED_OUTPUTS = { FALLBACK = true }
 
 local SPAN = 10
 local SETTLE_MS = 1500 -- monitor profiles and output managers apply first
@@ -129,7 +141,7 @@ end
 local function screens()
   local list, by_desc = {}, {}
   for _, m in ipairs(hl.get_monitors() or {}) do
-    if not m.is_mirror then
+    if not m.is_mirror and not IGNORED_OUTPUTS[m.name] then
       local d = m.description or ""
       table.insert(list, {
         name = m.name, description = d, x = m.x, y = m.y,
@@ -159,7 +171,7 @@ local function load_blocks()
   local by_key, by_block = {}, {}
   for line in (read_file(BLOCKS_FILE) or ""):gmatch("[^\n]+") do
     local block, key = line:match("^(%d+)\t(.+)$")
-    if block then
+    if block and not IGNORED_OUTPUTS[key] then
       block = tonumber(block)
       by_key[key] = block
       by_block[block] = key
@@ -206,6 +218,7 @@ local function block_map()
   table.sort(parts)
   return {
     list = list,
+    by_key = by_key,         -- screen key -> block, every screen ever seen
     by_name = by_name,       -- connector -> block, present screens
     owner_name = owner_name, -- block -> connector, present screens
     by_block = by_block,     -- block -> screen key, every screen ever seen
@@ -223,44 +236,113 @@ local function focused_block(map)
 end
 
 -- ── Keep workspaces on their own screen ─────────────────────────────────────
--- For each workspace, compare the screen it is on with the screen that owns
--- its block:
---   same screen                  fine
---   owner present elsewhere      misplaced -> move it home
---   owner known but unplugged    parked -> leave it (the bar shows it)
---   block nobody owns            renumber it into its current screen's block
+-- Adopted workspaces: current id -> { key = original screen, digit = n }.
+local function load_adopted()
+  local adopted = {}
+  for line in (read_file(ADOPTED_FILE) or ""):gmatch("[^\n]+") do
+    local id, digit, key = line:match("^(%d+)\t(%d+)\t(.+)$")
+    if id then adopted[tonumber(id)] = { key = key, digit = tonumber(digit) } end
+  end
+  return adopted
+end
+
+local function save_adopted(adopted)
+  local ids = {}
+  for id in pairs(adopted) do table.insert(ids, id) end
+  table.sort(ids)
+  local lines = {}
+  for _, id in ipairs(ids) do
+    table.insert(lines, id .. "\t" .. adopted[id].digit .. "\t" .. adopted[id].key)
+  end
+  write_file(ADOPTED_FILE, #lines > 0 and (table.concat(lines, "\n") .. "\n") or "")
+end
+
+-- For each workspace, in this order:
+--   adopted, and its own screen is back    renumber back, send home
+--   on the screen that owns its block      fine
+--   owner present on another screen        misplaced -> send home
+--   owner unplugged, or nobody's block     adopt it into this screen's block
 local function normalize()
   local map = block_map()
-  local taken, homeward = {}, {}
+  local adopted = load_adopted()
+  local adopted_changed = false
   local workspaces = hl.get_workspaces() or {}
-
-  for _, w in ipairs(workspaces) do taken[w.id] = true end
+  local taken, windows = {}, {}
 
   for _, w in ipairs(workspaces) do
+    taken[w.id] = true
+    windows[w.id] = w.windows or 0
+  end
+  for id in pairs(adopted) do
+    if not taken[id] then
+      adopted[id] = nil
+      adopted_changed = true
+    end
+  end
+
+  local function renumber(from, to)
+    local ok = pcall(hl.dispatch,
+      hl.dsp.workspace.change_id({ workspace = tostring(from), id = to }))
+    if ok then
+      taken[from], taken[to] = nil, true
+      windows[to], windows[from] = windows[from], nil
+      if adopted[from] then
+        adopted[to], adopted[from] = adopted[from], nil
+        adopted_changed = true
+      end
+    end
+    return ok
+  end
+
+  local function first_free(block, digit)
+    if not taken[id_for(block, digit)] then return id_for(block, digit) end
+    for d = 1, SPAN do
+      if not taken[id_for(block, d)] then return id_for(block, d) end
+    end
+  end
+
+  -- The wanted number, clearing it first if only an EMPTY workspace holds it
+  -- (a returning screen is handed an empty workspace 1 by its default rule).
+  local function claim(block, digit)
+    local wanted = id_for(block, digit)
+    if taken[wanted] and windows[wanted] == 0 then
+      local spare
+      for d = SPAN, 1, -1 do
+        if not taken[id_for(block, d)] then spare = id_for(block, d) break end
+      end
+      if spare then renumber(wanted, spare) end
+    end
+    return first_free(block, digit)
+  end
+
+  local homeward = {}
+
+  for _, w in ipairs(workspaces) do
+    local id = w.id
     local here = w.monitor and map.by_name[w.monitor.name]
-    if not w.special and w.id > 0 and here ~= nil then
-      local owner = block_of_id(w.id)
-      if owner ~= here then
-        if map.owner_name[owner] then
-          table.insert(homeward, { id = w.id, monitor = map.owner_name[owner] })
-        elseif not map.by_block[owner] then
-          local new_id
-          if not taken[id_for(here, digit_of_id(w.id))] then
-            new_id = id_for(here, digit_of_id(w.id))
-          else
-            for digit = 1, SPAN do
-              if not taken[id_for(here, digit)] then
-                new_id = id_for(here, digit)
-                break
-              end
-            end
+    if not w.special and id > 0 and here ~= nil and taken[id] then
+      local record = adopted[id]
+      local record_block = record and map.by_key[record.key]
+      if record_block ~= nil and map.owner_name[record_block] then
+        local target = claim(record_block, record.digit)
+        if target and renumber(id, target) then
+          adopted[target] = nil
+          adopted_changed = true
+          if map.owner_name[record_block] ~= w.monitor.name then
+            table.insert(homeward, { id = target, monitor = map.owner_name[record_block] })
           end
-          if new_id then
-            local ok = pcall(hl.dispatch,
-              hl.dsp.workspace.change_id({ workspace = tostring(w.id), id = new_id }))
-            if ok then
-              taken[w.id] = nil
-              taken[new_id] = true
+        end
+      else
+        local owner = block_of_id(id)
+        if owner ~= here then
+          if map.owner_name[owner] then
+            table.insert(homeward, { id = id, monitor = map.owner_name[owner] })
+          else
+            local target = first_free(here, digit_of_id(id))
+            local origin = record or (map.by_block[owner] and { key = map.by_block[owner], digit = digit_of_id(id) })
+            if target and renumber(id, target) and origin then
+              adopted[target] = origin
+              adopted_changed = true
             end
           end
         end
@@ -268,26 +350,37 @@ local function normalize()
     end
   end
 
+  if adopted_changed then save_adopted(adopted) end
+
   -- workspace.move only acts on the FOCUSED workspace, so visit each one and
-  -- put every screen's view (and the focus) back afterwards.
+  -- put every screen's view (and the focus) back afterwards. A screen that
+  -- was showing an empty workspace shows the first one sent home instead.
   if #homeward > 0 then
-    local focused = hl.get_active_workspace()
+    local focused_monitor = hl.get_active_monitor()
     local showing = {}
     for _, m in ipairs(map.list) do
       local ws = hl.get_active_workspace(m.name)
       if ws and not ws.special then showing[m.name] = ws.id end
     end
 
+    table.sort(homeward, function(a, b) return a.id < b.id end)
     for _, item in ipairs(homeward) do
       pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(item.id) }))
       pcall(hl.dispatch, hl.dsp.workspace.move({ monitor = item.monitor }))
+      local shown = showing[item.monitor]
+      if not shown or (windows[shown] or 0) == 0 then
+        showing[item.monitor] = item.id
+        windows[item.id] = math.max(windows[item.id] or 0, 1)
+      end
     end
 
-    for _, id in pairs(showing) do
-      pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(id) }))
+    for name, id in pairs(showing) do
+      if not focused_monitor or name ~= focused_monitor.name then
+        pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(id) }))
+      end
     end
-    if focused and not focused.special then
-      pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(focused.id) }))
+    if focused_monitor and showing[focused_monitor.name] then
+      pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(showing[focused_monitor.name]) }))
     end
   end
 end

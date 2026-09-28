@@ -9,7 +9,7 @@ Stock Hyprland has one global set of numbered workspaces. The first time you pre
 - `SUPER` + scroll wheel, `SUPER+TAB` and `SUPER+SHIFT+TAB` cycle through the current monitor's workspaces only, and `SUPER+CTRL+TAB` goes back to that monitor's previous one.
 - `SUPER+SHIFT+ALT` + arrow sends every window on this workspace to the monitor in that direction. Workspaces themselves stay on their own screen.
 - Each screen's bar shows **only that screen's** workspaces, numbered 1–9/0, and marks the one that screen is showing. Left-click focuses a workspace, right-click sends the focused window there, and scrolling cycles.
-- **Unplug a screen and its workspaces are parked, windows and all.** Plug it back in (on any port) and they go home.
+- **Unplug a screen (or undock) and its workspaces move onto the screen you still have, keeping their numbers where they're free**, so `SUPER+1` on the laptop reaches what was on the big screen's 1. Plug it back in (on any port) and they go home, windows and all.
 - If [hyprtasking](https://github.com/raybbian/hyprtasking) is installed, its overview grid shows each monitor its own workspaces.
 
 **Keys you bound yourself are never touched.** The plugin loads after your Hyprland config, so before it binds any key it checks your `~/.config/hypr` files, and it skips any key they bind. For example, a `SUPER+TAB` overview of your own stays yours.
@@ -75,7 +75,7 @@ Every **screen** gets a **block** of real Hyprland workspace ids. Block *B* owns
 
 - **Rules.** Every id is bound to its monitor with a Hyprland workspace rule, so a new workspace always opens on the right screen.
 - **Hotplug.** When monitors are added, removed or rearranged, the plugin waits 1.5 s for your monitor setup to apply, then reloads Hyprland if the set of screens changed, so the rules follow.
-- **Unplug.** Hyprland moves an unplugged screen's workspaces to a remaining one. The plugin leaves them there as **parked**: same numbers, same windows, shown in that bar as a display glyph (hover to see where they're from). When the screen comes back, they go home.
+- **Unplug.** Hyprland moves an unplugged screen's workspaces to a remaining one. The plugin **adopts** each one there: it's renumbered into that screen's block, keeping its number when it's free, and where it came from is recorded in `~/.local/state/omarchy/multi-monitor-workspaces/adopted`. Hover it in the bar to see its origin. When the screen comes back, the workspace is renumbered back and sent home, windows and all. If the returning screen has already opened an empty workspace on that number, the empty one makes way.
 - **Stray workspaces** that belong to no known screen (for example, ones created before the plugin was enabled) are renumbered into the block of the screen they're on, keeping their number when it's free.
 
 ## Update checks
