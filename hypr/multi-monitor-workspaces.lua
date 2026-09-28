@@ -125,23 +125,26 @@ local function bind(keys, description, fn)
 end
 
 -- ── Screens and their blocks ────────────────────────────────────────────────
+-- Plain tables, not the HL.Monitor objects: those are read-only.
 local function screens()
   local list, by_desc = {}, {}
   for _, m in ipairs(hl.get_monitors() or {}) do
     if not m.is_mirror then
-      table.insert(list, m)
       local d = m.description or ""
+      table.insert(list, {
+        name = m.name, description = d, x = m.x, y = m.y,
+        width = m.width, height = m.height, scale = m.scale,
+      })
       by_desc[d] = (by_desc[d] or 0) + 1
     end
   end
-  for _, m in ipairs(list) do
-    local d = m.description or ""
-    if d == "" then
-      m.mmw_key = m.name
-    elseif by_desc[d] > 1 then
-      m.mmw_key = d .. "@" .. m.name
+  for _, s in ipairs(list) do
+    if s.description == "" then
+      s.mmw_key = s.name
+    elseif by_desc[s.description] > 1 then
+      s.mmw_key = s.description .. "@" .. s.name
     else
-      m.mmw_key = d
+      s.mmw_key = s.description
     end
   end
   table.sort(list, function(a, b)
