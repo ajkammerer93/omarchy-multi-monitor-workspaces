@@ -6,11 +6,30 @@ Stock Hyprland has one global set of numbered workspaces. The first time you pre
 
 - `SUPER` + a number key goes to that workspace **on the monitor you're on**.
 - `SUPER+SHIFT` + a number key moves the focused window there, and `SUPER+SHIFT+ALT` + a number key moves it without following.
-- `SUPER` + scroll wheel cycles through the current monitor's workspaces only.
-- Each screen's bar shows **only that screen's** workspaces, numbered 1–9/0, and marks the one that screen is showing.
+- `SUPER` + scroll wheel, `SUPER+TAB` and `SUPER+SHIFT+TAB` cycle through the current monitor's workspaces only, and `SUPER+CTRL+TAB` goes back to that monitor's previous one.
+- `SUPER+SHIFT+ALT` + arrow sends every window on this workspace to the monitor in that direction. Workspaces themselves stay on their own screen.
+- Each screen's bar shows **only that screen's** workspaces, numbered 1–9/0, and marks the one that screen is showing. Left-click focuses a workspace, right-click sends the focused window there, and scrolling cycles.
+- **Unplug a screen and its workspaces are parked, windows and all.** Plug it back in (on any port) and they go home.
 - If [hyprtasking](https://github.com/raybbian/hyprtasking) is installed, its overview grid shows each monitor its own workspaces.
 
+**Keys you bound yourself are never touched.** The plugin loads after your Hyprland config, so before it binds any key it checks your `~/.config/hypr` files, and it skips any key they bind. For example, a `SUPER+TAB` overview of your own stays yours.
+
 Disabling the plugin puts every one of these back to stock Omarchy.
+
+## Settings
+
+Open the Omarchy bar settings and edit **Multi-Monitor Workspaces**, or set them from a terminal:
+
+```bash
+omarchy bar set io.github.davidboulay.multi-monitor-workspaces count 5 --json
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `count` | 10 | Workspaces per screen, 1–10 (10 is the `0` key). Number keys past this are unbound, so they can't jump to another screen. |
+| `extraKeys` | true | The per-screen `TAB` / `CTRL+TAB` / `SHIFT+ALT+arrow` keys above. The number keys and `SUPER` + scroll are always per-screen. |
+
+A change applies within a couple of seconds, with no reload needed on your part.
 
 ## Install
 
@@ -42,21 +61,22 @@ The first command deletes the loader file and reloads Hyprland. You can skip it:
 
 ## How it works
 
-Each monitor gets a **slot**, ranked by position from left to right (then top to bottom); mirrored outputs are skipped. Slot *S* owns the real Hyprland workspace ids *S*×10+1 … *S*×10+10:
+Every **screen** gets a **block** of real Hyprland workspace ids. Block *B* owns *B*×10+1 … *B*×10+10:
 
-| Slot | Monitor | Real ids | Shown as |
-|---|---|---|---|
-| 0 | leftmost | 1–10 | 1–9, 0 |
-| 1 | next to the right | 11–20 | 1–9, 0 |
-| 2 | … | 21–30 | 1–9, 0 |
+| Block | Real ids | Shown as |
+|---|---|---|
+| 0 | 1–10 | 1–9, 0 |
+| 1 | 11–20 | 1–9, 0 |
+| 2 | 21–30 | 1–9, 0 |
 
-A single monitor is always slot 0, so it behaves exactly like stock.
+- **Blocks belong to the screen, not the port.** A screen is identified by its description (identical panels also get their connector name added), so it keeps its block across unplugging, a different dock port, and reboots. Blocks are remembered in `~/.local/state/omarchy/multi-monitor-workspaces/blocks`.
+- **Assignment.** A new screen takes the lowest free block. On the very first run, screens get blocks from left to right, so the leftmost one keeps the plain 1–9.
+- **The numbers stay per screen**, so Omarchy's per-workspace layout toggle (`SUPER+L`) and switch animations work as usual.
 
 - **Rules.** Every id is bound to its monitor with a Hyprland workspace rule, so a new workspace always opens on the right screen.
-- **Hotplug.** When monitors are added, removed or rearranged, the plugin waits 1.5 s for your monitor setup to apply. If the slot map changed, it reloads Hyprland so the rules follow.
-- **Renumbering.** A workspace that ends up on a monitor that doesn't own its id is renumbered into that monitor's range (`hl.dsp.workspace.change_id`), keeping its number when that's free. This happens when a monitor is unplugged (Hyprland moves its workspaces to the remaining screen) or when you move a workspace across with `SUPER+SHIFT+ALT+arrow`. Windows are never moved; only the number changes.
-
-> **Unplugging folds, replugging doesn't restore.** When you unplug a monitor, its workspaces move to the remaining screen and take free numbers there. They stay there when you plug the monitor back in.
+- **Hotplug.** When monitors are added, removed or rearranged, the plugin waits 1.5 s for your monitor setup to apply, then reloads Hyprland if the set of screens changed, so the rules follow.
+- **Unplug.** Hyprland moves an unplugged screen's workspaces to a remaining one. The plugin leaves them there as **parked**: same numbers, same windows, shown in that bar as a display glyph (hover to see where they're from). When the screen comes back, they go home.
+- **Stray workspaces** that belong to no known screen (for example, ones created before the plugin was enabled) are renumbered into the block of the screen they're on, keeping their number when it's free.
 
 ## Update checks
 
