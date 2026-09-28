@@ -1,23 +1,43 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Io
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
 // Multi-Monitor Workspaces bar widget. Derived from Omarchy's
 // omarchy.workspaces (MIT), which shows the global ids 1-10 on every screen.
-// Paired with hypr/multi-monitor-workspaces.lua: each monitor owns the real ids
-// slot*10+1 .. slot*10+10, slots ranked left to right (then top to bottom),
-// mirrors skipped -- the same ordering as the Lua side, so both agree on which
-// screen owns what. Each bar shows only the workspaces on ITS screen,
-// labelled 1-9/0. A workspace from another slot that landed here (briefly,
-// before the Hyprland half renumbers it) shows its real id.
+//
+// Paired with hypr/multi-monitor-workspaces.lua. Every screen owns a block of
+// real ids (block B = B*10+1 .. B*10+10), remembered per screen in
+// ~/.local/state/omarchy/multi-monitor-workspaces/blocks, which this widget
+// reads. Screens are keyed exactly as the Lua side keys them: description,
+// or description@connector when two identical panels describe themselves
+// alike, or the connector when there is no description.
+//
+// Each bar shows only ITS screen's workspaces, labelled 1-9/0, and marks the
+// one that screen is showing. A workspace parked here from an unplugged
+// screen shows as a display glyph; hover names where it came from.
+//
+//   left-click    focus that workspace
+//   right-click   send the focused window there
+//   scroll        previous / next workspace on this screen
+//
+// The widget also projects its settings (count, extraKeys) into the plugin's
+// state folder, where the Hyprland half reads them.
 BarWidget {
   id: root
   moduleName: "io.github.davidboulay.multi-monitor-workspaces"
 
   readonly property int span: 10
+  readonly property int count: Math.max(1, Math.min(root.span, Number(root.setting("count", 10)) || 10))
+  readonly property bool extraKeys: root.setting("extraKeys", true) !== false
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy/multi-monitor-workspaces"
+  readonly property string parkedGlyph: "󰍹"
+
+  property var blocksByKey: ({})
+  property var keysByBlock: ({})
 
   readonly property var monitor: {
     var win = QsWindow.window
@@ -29,32 +49,93 @@ BarWidget {
     return !!ipc && ((ipc.mirrorOf !== undefined && ipc.mirrorOf !== "none") || ipc.disabled === true)
   }
 
-  readonly property int slot: {
-    if (!root.monitor) return 0
-    var list = []
+  function screenKey(m) {
+    if (!m) return ""
+    var desc = m.description || ""
+    if (desc === "") return m.name
+    var same = 0
     var values = Hyprland.monitors.values
     for (var i = 0; i < values.length; i++) {
-      if (!root.isMirror(values[i])) list.push(values[i])
+      if (!root.isMirror(values[i]) && (values[i].description || "") === desc) same++
     }
-    list.sort(function(a, b) {
-      if (a.x !== b.x) return a.x - b.x
-      if (a.y !== b.y) return a.y - b.y
-      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)
-    })
-    for (var j = 0; j < list.length; j++) {
-      if (list[j].name === root.monitor.name) return j
-    }
-    return 0
+    return same > 1 ? desc + "@" + m.name : desc
   }
 
-  readonly property int base: root.slot * root.span
+  readonly property int block: {
+    var key = root.screenKey(root.monitor)
+    var b = root.blocksByKey[key]
+    return b === undefined ? 0 : b
+  }
+  readonly property int base: root.block * root.span
 
+  function parseBlocks(text) {
+    var byKey = {}
+    var byBlock = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var tab = lines[i].indexOf("\t")
+      if (tab <= 0) continue
+      var b = parseInt(lines[i].slice(0, tab), 10)
+      var key = lines[i].slice(tab + 1)
+      if (isNaN(b) || !key) continue
+      byKey[key] = b
+      byBlock[b] = key
+    }
+    root.blocksByKey = byKey
+    root.keysByBlock = byBlock
+  }
+
+  FileView {
+    id: blocksFile
+    path: root.stateDir + "/blocks"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.parseBlocks(text())
+    onLoadFailed: root.parseBlocks("")
+  }
+
+  // The Hyprland half creates the blocks file on its first parse, which can
+  // land after this widget loads; a watch on a missing file never fires.
+  Timer {
+    interval: 3000
+    repeat: true
+    running: Object.keys(root.blocksByKey).length === 0
+    onTriggered: blocksFile.reload()
+  }
+
+  // ── Settings projection ─────────────────────────────────────────────────
+  readonly property string settingsText: "count=" + root.count + "\nextra_keys=" + (root.extraKeys ? 1 : 0) + "\n"
+
+  FileView {
+    id: settingsFile
+    path: root.stateDir + "/settings"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.syncSettings()
+    onLoadFailed: root.syncSettings()
+  }
+
+  Process {
+    id: settingsWriter
+    command: ["sh", "-c", "mkdir -p \"$1\" && printf '%s' \"$2\" > \"$1/settings\"", "sh", root.stateDir, root.settingsText]
+  }
+
+  function syncSettings() {
+    var current = ""
+    try { current = settingsFile.text() } catch (e) { current = "" }
+    if (current !== root.settingsText && !settingsWriter.running) settingsWriter.running = true
+  }
+
+  onSettingsTextChanged: syncSettings()
+
+  // ── Workspaces on this screen ───────────────────────────────────────────
   function workspaceById(id) {
     var values = Hyprland.workspaces.values
     for (var i = 0; i < values.length; i++) {
       if (values[i].id === id) return values[i]
     }
-
     return null
   }
 
@@ -62,31 +143,67 @@ BarWidget {
     return !!ws && !!ws.monitor && !!root.monitor && ws.monitor.name === root.monitor.name
   }
 
+  function isOwn(id) {
+    return id > root.base && id <= root.base + root.span
+  }
+
   function workspaceIds() {
     var ids = []
-    for (var n = 1; n <= 5; n++) ids.push(root.base + n)
+    for (var n = 1; n <= Math.min(5, root.count); n++) ids.push(root.base + n)
 
+    var parked = []
     var values = Hyprland.workspaces.values
     for (var i = 0; i < values.length; i++) {
       var id = values[i].id
-      if (id > 0 && root.onThisScreen(values[i]) && ids.indexOf(id) === -1) ids.push(id)
+      if (id <= 0 || !root.onThisScreen(values[i])) continue
+      if (root.isOwn(id)) {
+        if (ids.indexOf(id) === -1) ids.push(id)
+      } else if (parked.indexOf(id) === -1) {
+        parked.push(id)
+      }
     }
 
     ids.sort(function(left, right) { return left - right })
-    return ids
+    parked.sort(function(left, right) { return left - right })
+    return ids.concat(parked)
   }
 
   function label(id) {
-    if (id > root.base && id <= root.base + root.span) {
+    if (root.isOwn(id)) {
       var digit = id - root.base
       return digit === root.span ? "0" : String(digit)
     }
-    return String(id)
+    return root.parkedGlyph
+  }
+
+  function tooltip(id) {
+    if (root.isOwn(id)) return ""
+    var owner = root.keysByBlock[Math.floor((id - 1) / root.span)]
+    var digit = (id - 1) % root.span + 1
+    var slot = digit === root.span ? "0" : String(digit)
+    return owner
+      ? "Workspace " + slot + " from " + owner + " (unplugged); goes back when it returns"
+      : "Workspace " + id + " from another screen"
+  }
+
+  function dispatch(lua) {
+    if (!root.bar) return
+    root.bar.run("hyprctl dispatch " + Util.shellQuote(lua))
   }
 
   function focusWorkspace(id) {
-    if (!root.bar) return
-    root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
+    root.dispatch("hl.dsp.focus({ workspace = \"" + id + "\" })")
+  }
+
+  function sendWindow(id) {
+    root.dispatch("hl.dsp.window.move({ workspace = \"" + id + "\", follow = false })")
+  }
+
+  function stepWorkspace(delta) {
+    var active = root.monitor && root.monitor.activeWorkspace ? root.monitor.activeWorkspace.id : root.base + 1
+    var digit = root.isOwn(active) ? active - root.base : 1
+    digit = ((digit - 1 + delta) % root.count + root.count) % root.count + 1
+    root.focusWorkspace(root.base + digit)
   }
 
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
@@ -113,15 +230,22 @@ BarWidget {
         // This screen's visible workspace, not the globally focused one, so
         // each bar marks where its own monitor is.
         readonly property bool focused: root.monitor !== null && root.monitor.activeWorkspace !== null && root.monitor.activeWorkspace.id === modelData
+        readonly property bool parked: !root.isOwn(modelData)
 
         bar: root.bar
-        text: focused ? "󱓻" : root.label(modelData)
+        text: focused && !parked ? "󱓻" : root.label(modelData)
+        tooltipText: root.tooltip(modelData)
+        foreground: parked ? (root.bar ? root.bar.urgent : Color.urgent) : (root.bar ? root.bar.barForeground : Color.foreground)
         opacity: occupied || focused ? 1 : 0.5
         horizontalMargin: 6
         verticalPadding: 6
         fixedWidth: root.vertical ? root.barSize : Style.space(20)
         fixedHeight: root.barSize
-        onPressed: function() { root.focusWorkspace(modelData) }
+        onPressed: function(button) {
+          if (button === Qt.RightButton) root.sendWindow(modelData)
+          else if (button === Qt.LeftButton) root.focusWorkspace(modelData)
+        }
+        onWheelMoved: function(delta) { root.stepWorkspace(delta < 0 ? 1 : -1) }
       }
     }
   }

@@ -52,7 +52,10 @@ ensure() {
     needs_reload=1
   fi
 
-  if enabled && [[ $(hypr_status) != active* ]]; then
+  # Not active yet, or still running the Lua from before a plugin update.
+  local version
+  version=$(jq -r .version "$PLUGIN_DIR/manifest.json")
+  if enabled && [[ $(hypr_status) != "active $version "* ]]; then
     needs_reload=1
   fi
 
