@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.davidboulay.multi-monitor-workspaces",
+  "name": "Multi-Monitor Workspaces",
+  "version": "1.0.0",
+  "author": "David Boulay",
+  "description": "Multi-monitor: each monitor gets its own isolated set of workspaces 1-9",
+  "homepage": "https://github.com/davidboulay/omarchy-multi-monitor-workspaces",
+  "license": "MIT",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Workspaces.qml"
+  },
+  "barWidget": {
+    "displayName": "Multi-Monitor Workspaces",
+    "description": "Workspace numbers for this screen only",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.workspaces"
+  }
+}

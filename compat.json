@@ -1,0 +1,22 @@
+{
+  "_comment": "What this plugin was last checked against. The service compares the live system with these values and notifies once per difference. Update after re-testing against a new Omarchy release.",
+  "testedOmarchy": "4.0.4-1",
+  "testedHyprland": "v0.56.2",
+  "fingerprints": {
+    "/usr/share/omarchy/default/hypr/bindings/tiling.lua": {
+      "md5": "9f91c4e9bf94448603996325b61a0924",
+      "why": "Stock workspace bindings (SUPER + number row, SUPER+scroll) that this plugin replaces"
+    },
+    "/usr/share/omarchy/shell/plugins/bar/widgets/Workspaces.qml": {
+      "md5": "98a3140c88725e9511a80ce6c50b35ea",
+      "why": "Stock Workspaces bar widget that this plugin's widget is derived from"
+    }
+  },
+  "hyprtasking": {
+    "_comment": "Builds whose overview grid places monitor-bound workspaces in id order (raybbian/hyprtasking#138). Other builds show the second monitor's tiles offset by one after a slot change.",
+    "fixedCommits": [
+      "6f46932834bc66ee21c3c928d13e454c7b9d20c4"
+    ],
+    "issue": "https://github.com/raybbian/hyprtasking/pull/138"
+  }
+}

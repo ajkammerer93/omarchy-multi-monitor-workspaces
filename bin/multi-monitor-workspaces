@@ -1,0 +1,157 @@
+#!/bin/bash
+# Multi-Monitor Workspaces helper.
+#
+#   multi-monitor-workspaces ensure         put the Hyprland loader in place, reload if needed
+#   multi-monitor-workspaces check [--notify]  list problems (exit 1 if any); --notify
+#                                           sends one notification per NEW problem
+#   multi-monitor-workspaces status         enabled?, Hyprland-side status, problems
+#   multi-monitor-workspaces remove-loader  delete the loader and reload (full cleanup)
+#
+# The plugin's service runs `ensure` then `check --notify` whenever the shell
+# starts (which includes after every `omarchy update`) and once a day.
+
+set -uo pipefail
+
+PLUGIN_ID="io.github.davidboulay.multi-monitor-workspaces"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOADER_SRC="$PLUGIN_DIR/hypr/loader.lua"
+TOGGLES_DIR="$HOME/.local/state/omarchy/toggles/hypr"
+LOADER_DST="$TOGGLES_DIR/multi-monitor-workspaces.lua"
+STATE_DIR="$HOME/.local/state/omarchy/multi-monitor-workspaces"
+STATUS_FILE="$STATE_DIR/status"
+NOTIFIED_FILE="$STATE_DIR/notified"
+SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
+COMPAT="$PLUGIN_DIR/compat.json"
+GLYPH="󰍹"
+
+enabled() {
+  [[ -s $SHELL_CONFIG ]] || return 1
+  jq -e --arg id "$PLUGIN_ID" 'del(.disabledPlugins) | [.. | strings] | index($id) != null' \
+    "$SHELL_CONFIG" >/dev/null 2>&1
+}
+
+hypr_status() {
+  [[ -f $STATUS_FILE ]] && head -n1 "$STATUS_FILE" || echo "unknown"
+}
+
+reload_hyprland() {
+  hyprctl reload >/dev/null 2>&1
+  # The loader writes the status file during the parse; give it a moment.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.2
+    [[ $(hypr_status) == active* || $(hypr_status) == inactive* || $(hypr_status) == error* ]] && break
+  done
+}
+
+ensure() {
+  local needs_reload=0
+
+  if ! cmp -s "$LOADER_SRC" "$LOADER_DST"; then
+    mkdir -p "$TOGGLES_DIR" || return 1
+    cp "$LOADER_SRC" "$LOADER_DST" || return 1
+    needs_reload=1
+  fi
+
+  if enabled && [[ $(hypr_status) != active* ]]; then
+    needs_reload=1
+  fi
+
+  ((needs_reload)) && reload_hyprland
+  return 0
+}
+
+# One line per problem: "<stable id>\t<headline>\t<detail>".
+problems() {
+  if enabled; then
+    if ! cmp -s "$LOADER_SRC" "$LOADER_DST"; then
+      printf 'loader\tHyprland loader missing\tRun: %s ensure\n' "$PLUGIN_DIR/bin/multi-monitor-workspaces"
+    fi
+
+    local status
+    status=$(hypr_status)
+    case $status in
+      active*) ;;
+      error*) printf 'error\tHyprland side failed to load\t%s\n' "${status#error }" ;;
+      *) printf 'inactive\tEnabled, but not active in Hyprland\tStatus: %s. Try: hyprctl reload\n' "$status" ;;
+    esac
+
+    local errors
+    errors=$(hyprctl configerrors 2>/dev/null | grep -i 'multi-monitor-workspaces' || true)
+    [[ -n $errors ]] && printf 'configerrors\tHyprland config errors from this plugin\t%s\n' "$(head -n1 <<<"$errors")"
+
+    if jq -e 'del(.disabledPlugins) | [.. | strings] | index("omarchy.workspaces") != null' "$SHELL_CONFIG" >/dev/null 2>&1; then
+      printf 'bar-both\tStock Workspaces widget is also in the bar\tRemove omarchy.workspaces from the bar, or it shows global numbers beside the per-monitor ones\n'
+    fi
+  fi
+
+  # Upstream drift: the stock files this plugin replaces or is derived from.
+  local file expected current why
+  while IFS=$'\t' read -r file expected why; do
+    [[ -n $file ]] || continue
+    if [[ -f $file ]]; then
+      current=$(md5sum "$file" | cut -d' ' -f1)
+      if [[ $current != "$expected" ]]; then
+        printf 'drift:%s:%s\tOmarchy update changed %s\t%s. Multi-Monitor Workspaces was tested against Omarchy %s; check it still behaves.\n' \
+          "$file" "$current" "$(basename "$file")" "$why" "$(jq -r .testedOmarchy "$COMPAT")"
+      fi
+    else
+      printf 'drift:%s:missing\tOmarchy update removed %s\t%s\n' "$file" "$(basename "$file")" "$why"
+    fi
+  done < <(jq -r '.fingerprints | to_entries[] | [.key, .value.md5, .value.why] | @tsv' "$COMPAT")
+
+  # hyprtasking overview grid (optional dependency).
+  if hyprctl plugin list 2>/dev/null | grep -qi '^Plugin Hyprtasking'; then
+    local state="/var/cache/hyprpm/$USER/hyprtasking/state.toml" hash=""
+    [[ -f $state ]] && hash=$(sed -n "s/^hash = '\\(.*\\)'/\\1/p" "$state" | head -n1)
+    if ! jq -e --arg h "$hash" '.hyprtasking.fixedCommits | index($h) != null' "$COMPAT" >/dev/null 2>&1; then
+      printf 'hyprtasking:%s\thyprtasking build lacks the grid fix\tThe overview on the second monitor can open the tile next to the one you pick after a monitor change. See %s\n' \
+        "${hash:-unknown}" "$(jq -r .hyprtasking.issue "$COMPAT")"
+    fi
+  fi
+}
+
+check() {
+  local notify=${1:-}
+  local list
+  list=$(problems)
+
+  if [[ $notify == --notify ]]; then
+    mkdir -p "$STATE_DIR"
+    touch "$NOTIFIED_FILE"
+    local id headline detail
+    while IFS=$'\t' read -r id headline detail; do
+      [[ -n $id ]] || continue
+      if ! grep -qxF "$id" "$NOTIFIED_FILE"; then
+        omarchy-notification-send --app-name "Multi-Monitor Workspaces" -g "$GLYPH" "$headline" "$detail" >/dev/null 2>&1 || true
+      fi
+    done <<<"$list"
+    # Remember exactly the current set, so a problem that clears and returns
+    # notifies again, but a standing one notifies once.
+    cut -f1 <<<"$list" | sed '/^$/d' >"$NOTIFIED_FILE"
+  fi
+
+  if [[ -n $list ]]; then
+    cut -f2,3 <<<"$list" | sed 's/\t/: /'
+    return 1
+  fi
+  echo "ok"
+}
+
+case ${1:-status} in
+  ensure) ensure ;;
+  check) check "${2:-}" ;;
+  status)
+    enabled && echo "plugin: enabled" || echo "plugin: disabled"
+    echo "hyprland: $(hypr_status)"
+    check
+    ;;
+  remove-loader)
+    rm -f "$LOADER_DST"
+    hyprctl reload >/dev/null 2>&1
+    echo "loader removed"
+    ;;
+  *)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
